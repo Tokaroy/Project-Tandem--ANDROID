@@ -11,9 +11,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
-#ifndef _WIN32
-#include <curl/curl.h>
 #include <cstdint>
+#if !defined(_WIN32) && !defined(GCN_ANDROID_OFFLINE)
+#include <curl/curl.h>
 #endif
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -73,7 +73,10 @@ std::string executable_build() {
 }
 
 Json room_request(const Json& request) {
-#ifdef _WIN32
+#if defined(GCN_ANDROID_OFFLINE)
+    (void)request;
+    throw std::runtime_error("service-unavailable");
+#elif defined(_WIN32)
     struct Handle {
         HINTERNET value;
         explicit Handle(HINTERNET v):value(v){if(!value)throw std::runtime_error("service-unavailable");}

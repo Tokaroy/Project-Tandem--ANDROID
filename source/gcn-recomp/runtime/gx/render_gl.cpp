@@ -258,6 +258,10 @@ static void bind_vertex_format(uint32_t ntex) {
     glBindVertexArray(vao);
 }
 
+#ifdef __ANDROID__
+static const bool g_android_gl_checks = getenv("GCN_ANDROID_GL_CHECKS") != nullptr;
+#endif
+
 // One draw command, from the packed region its texture coordinate count selects.
 static void draw_cmd(const Batch& b, const Cmd& c) {
     static const GLenum mode[3] = {GL_TRIANGLES, GL_LINES, GL_POINTS};
@@ -266,7 +270,7 @@ static void draw_cmd(const Batch& b, const Cmd& c) {
 #ifdef __ANDROID__
     {
         static unsigned k133_count = 0;
-        if (k133_count++ < 24) {
+        if (g_android_gl_checks && k133_count++ < 24) {
             GLint program = 0, vao = 0, ebo = 0;
             GLint draw_fbo = 0, read_fbo = 0;
             GLint status = 0;
@@ -301,7 +305,7 @@ static void draw_cmd(const Batch& b, const Cmd& c) {
 #ifdef __ANDROID__
     {
         static unsigned k130_count = 0;
-        if (k130_count++ < 32) {
+        if (g_android_gl_checks && k130_count++ < 32) {
             GLenum e = glGetError();
             __android_log_print(
                 ANDROID_LOG_INFO, "TANDEM-GX",
@@ -794,6 +798,11 @@ bool render_shader_cache_step(double budget_ms, int* done, int* total) {
             }
             fprintf(stderr, "[shaders] %d programs from cache (%d from binaries, %d compiled) in %.0f ms\n",
                     L.from_binary + L.compiled, L.from_binary, L.compiled, ms_since(L.t0));
+#ifdef __ANDROID__
+            __android_log_print(ANDROID_LOG_INFO, "TANDEM-SHADER",
+                "cache: %d binaries, %d compiled in %.1f ms",
+                L.from_binary, L.compiled, ms_since(L.t0));
+#endif
             L.active = false;
             L.data.clear();
             L.data.shrink_to_fit();
@@ -829,6 +838,13 @@ static const Program& get_program(const ShaderKey& k) {
             fclose(f);
         }
     }
+#ifdef __ANDROID__
+    const double build_ms = ms_since(t0);
+    if (build_ms >= 4.0) {
+        __android_log_print(ANDROID_LOG_INFO, "TANDEM-SHADER",
+            "cache miss: program %zu built and recorded in %.1f ms", g_programs.size(), build_ms);
+    }
+#endif
     return pr;
 }
 
@@ -1151,8 +1167,7 @@ uint64_t render_texture_hash(uint32_t id) {
 // Opt-in Dolphin texture lookup; never use sequential texture IDs.
 static bool mkdd_hd_load(const std::string& name, std::vector<uint8_t>& pixels,
                          uint32_t& w, uint32_t& h) {
-    static const char* enabled=std::getenv("MKDD_DOLPHIN_HD");
-    if (!enabled || std::string(enabled)!="1" || name.empty()) return false;
+    if (name.empty()) return false;
     static const char* root=std::getenv("MKDD_HD_DIR");
     if (!root || !*root) return false;
     static std::unordered_map<std::string,std::string> index;
@@ -1216,13 +1231,23 @@ static void upload_texture(const TexData& t) {
     }
     // MKDD_HD_UPLOAD_END
 
-    for (size_t l = 0; l < t.levels.size(); l++) {
-        glTexImage2D(GL_TEXTURE_2D, (GLint)l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, t.levels[l].data());
-        w = w > 1 ? w / 2 : 1;
-        h = h > 1 ? h / 2 : 1;
+    if (!t.intensity.empty()) {
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_R8, w, h, 0, GL_RED, GL_UNSIGNED_BYTE, t.intensity.data());
+        // GX I8 supplies the same intensity in all four channels.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_R, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_G, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_B, GL_RED);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_SWIZZLE_A, GL_RED);
+        g.levels = 1;
+    } else {
+        for (size_t l = 0; l < t.levels.size(); l++) {
+            glTexImage2D(GL_TEXTURE_2D, (GLint)l, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, t.levels[l].data());
+            w = w > 1 ? w / 2 : 1;
+            h = h > 1 ? h / 2 : 1;
+        }
+        g.levels = static_cast<uint32_t>(t.levels.size());
     }
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)t.levels.size() - 1);
-    g.levels = (uint32_t)t.levels.size();
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(g.levels) - 1);
     g.last_used = g_render_frame;
     g_textures[t.id] = g;
     // GCN_TEXDUMP=<dir> writes every texture's top level as <dir>/tex_<id>.png, alpha
@@ -1230,7 +1255,12 @@ static void upload_texture(const TexData& t) {
     static const char* dump = getenv("GCN_TEXDUMP");
     if (dump) {
         std::vector<uint8_t> px((size_t)t.width * t.height * 4);
-        memcpy(px.data(), t.levels[0].data(), px.size());
+        if (t.intensity.empty()) {
+            memcpy(px.data(), t.levels[0].data(), px.size());
+        } else {
+            for (size_t i = 0; i < t.intensity.size(); ++i)
+                px[i * 4] = px[i * 4 + 1] = px[i * 4 + 2] = t.intensity[i];
+        }
         for (size_t i = 3; i < px.size(); i += 4) px[i] = 255;
         char path[512];
         snprintf(path, sizeof(path), "%s/tex_%u.png", dump, t.id);
@@ -2538,9 +2568,6 @@ static void blit_rect_to_output(GLuint src_tex, uint32_t tex_w, uint32_t tex_h, 
     glViewport(0, 0, g_win_w, g_win_h);
     glClearColor(0, 0, 0, 1);
     glClear(GL_COLOR_BUFFER_BIT);
-    // TANDEM_K049_FULLSCREEN
-    // Stretch the final scanout across the complete EGL surface.
-    glViewport(0, 0, g_win_w, g_win_h);
     glUseProgram(g_blit_prog);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, src_tex);
@@ -2553,7 +2580,7 @@ static void blit_rect_to_output(GLuint src_tex, uint32_t tex_w, uint32_t tex_h, 
 #ifdef __ANDROID__
     {
         static unsigned k130_output_count = 0;
-        if (k130_output_count++ < 32) {
+        if (g_android_gl_checks && k130_output_count++ < 32) {
             GLenum e = glGetError();
             __android_log_print(
                 ANDROID_LOG_INFO, "TANDEM-GX",
@@ -2565,8 +2592,9 @@ static void blit_rect_to_output(GLuint src_tex, uint32_t tex_w, uint32_t tex_h, 
 
 #ifdef __ANDROID__
     {
+        static const bool probe_pixels = getenv("GCN_ANDROID_PROBE_PIXELS") != nullptr;
         static unsigned tandem_probe_count = 0;
-        if (tandem_probe_count++ < 12) {
+        if (probe_pixels && tandem_probe_count++ < 12) {
             GLint old_read_fbo = 0;
             GLint old_read_buffer = 0;
             GLint old_draw_fbo = 0;
@@ -2678,7 +2706,12 @@ static Xfb& xfb_for(uint32_t dest, uint32_t w, uint32_t stride, uint32_t h) {
     glClear(GL_COLOR_BUFFER_BIT);
     x.written.assign(h, 0);
     g_xfbs.push_back(x);
-    if (g_xfbs.size() > 8) g_xfbs.erase(g_xfbs.begin());
+    if (g_xfbs.size() > 8) {
+        const auto& old = g_xfbs.front();
+        glDeleteFramebuffers(1, &old.fbo);
+        glDeleteTextures(1, &old.tex);
+        g_xfbs.erase(g_xfbs.begin());
+    }
     return g_xfbs.back();
 }
 
@@ -2712,7 +2745,7 @@ static Xfb* xfb_write(const EfbCopyCmd& c) {
 #ifdef __ANDROID__
     {
         static unsigned k130_count = 0;
-        if (k130_count++ < 32) {
+        if (g_android_gl_checks && k130_count++ < 32) {
             GLenum e = glGetError();
             __android_log_print(
                 ANDROID_LOG_INFO, "TANDEM-GX",
@@ -2729,7 +2762,7 @@ static Xfb* xfb_write(const EfbCopyCmd& c) {
     return &x;
 }
 
-static void present(const EfbCopyCmd& c,bool publish=true) {
+static bool present(const EfbCopyCmd& c, bool publish) {
     // A copy that is part of a frame: into the XFB, and nothing to show unless it was the
     // last part.
     Xfb* xfb = nullptr;
@@ -2737,11 +2770,11 @@ static void present(const EfbCopyCmd& c,bool publish=true) {
         uint32_t h = g_batch_display_height;
         if (h && c.dst_h < h) {
             xfb = xfb_write(c);
-            if (!xfb) return;
+            if (!xfb) return false;
         }
     }
     if (!g_pair_second && !g_interpolating) g_present_count++;
-    if (!publish) return; // Replay still assembles XFB strips and advances logical scanout.
+    if (!publish) return false; // Replay still assembles XFB strips and advances logical scanout.
     // GCN_DUMP_RANGE=a-b restricts dumping to a window of presented frames, so a short
     // stretch can be captured every single frame. Flicker is only visible frame by frame.
     static int range_lo = -1, range_hi = -1;
@@ -2759,10 +2792,11 @@ static void present(const EfbCopyCmd& c,bool publish=true) {
     if (xfb) {
         if (!g_interpolating && g_dump_dir && g_dump_every && in_range && g_present_count % g_dump_every == 0) dump_xfb(*xfb, c.dst_w);
         blit_rect_to_output(xfb->tex, c.dst_w, xfb->h, 0, 0, c.dst_w, xfb->h);
-        return;
+    } else {
+        if (!g_interpolating && g_dump_dir && g_dump_every && in_range && g_present_count % g_dump_every == 0) dump_efb(c);
+        blit_to_output(c, g_efb_color);
     }
-    if (!g_interpolating && g_dump_dir && g_dump_every && in_range && g_present_count % g_dump_every == 0) dump_efb(c);
-    blit_to_output(c, g_efb_color);
+    return true;
 }
 
 void render_set_output_fbo(unsigned fbo) { g_output_fbo = (GLuint)fbo; }
@@ -3748,13 +3782,15 @@ static bool execute_batch(Batch& b, bool do_present, const std::vector<uint8_t>*
     // The displayed rect may use only part of the EFB. Anchor to its edges,
     // rather than to unused pixels outside the game's scanout.
     float overlay_center = 0.0f, overlay_halfwidth = 1.0f;
-    EfbCopyCmd overlay_screen{};overlay_screen.src_w=EFB_W;overlay_screen.src_h=EFB_H;
-    for (const auto& cmd : b.cmds) {
-        if ((cmd.type == CmdType::EfbCopy && cmd.copy.to_xfb) || cmd.type == CmdType::Present) {
-            if (cmd.copy.src_w) {
-                overlay_screen=cmd.copy;
+    EfbCopyCmd overlay_screen{};
+    if (g_flat_overlay_scale != 1.0f) {
+        overlay_screen.src_w = EFB_W;
+        overlay_screen.src_h = EFB_H;
+        for (const auto& cmd : b.cmds) {
+            if (((cmd.type == CmdType::EfbCopy && cmd.copy.to_xfb) || cmd.type == CmdType::Present) && cmd.copy.src_w) {
+                overlay_screen = cmd.copy;
                 overlay_center = (2.0f * cmd.copy.src_x + cmd.copy.src_w) / EFB_W - 1.0f;
-                overlay_halfwidth = (float)cmd.copy.src_w / EFB_W;
+                overlay_halfwidth = float(cmd.copy.src_w) / EFB_W;
             }
         }
     }
@@ -4113,9 +4149,8 @@ static bool execute_batch(Batch& b, bool do_present, const std::vector<uint8_t>*
             break;
         }
         case CmdType::Present:
-            if (b.suppress_present) present(c.copy,false);
-            else if (do_present) present(c.copy);
-            presented = true;
+            if (b.suppress_present || do_present)
+                presented |= present(c.copy, do_present && !b.suppress_present);
             glBindFramebuffer(GL_FRAMEBUFFER, g_efb_fbo);
             glViewport(0, 0, EFB_W * g_scale, EFB_H * g_scale);
             cur_state = UINT32_MAX;

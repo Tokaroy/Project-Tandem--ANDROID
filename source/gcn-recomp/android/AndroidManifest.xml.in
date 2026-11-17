@@ -1,11 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="@G_ANDROID_PACKAGE@">
-    <uses-permission android:name="android.permission.INTERNET" />
+    package="@TANDEM_ANDROID_APPLICATION_ID@">
+    @GCN_ANDROID_NETWORK_PERMISSION@
     @GCN_ANDROID_FEATURE@
     <application android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
         android:label="@G_LABEL@" android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher" android:hasCode="true">
-        <activity android:name=".TandemActivity"
+        <activity android:name="@G_ANDROID_PACKAGE@.TandemActivity"
 android:screenOrientation="landscape"
             android:label="@G_LABEL@" android:configChanges="orientation|screenSize|keyboardHidden"
             android:exported="true">
@@ -16,10 +16,6 @@ android:screenOrientation="landscape"
             </intent-filter>
         </activity>
     
-        <activity
-            android:name="com.epicgames.mobile.eossdk.EOSAuthHandlerActivity"
-            android:exported="true"
-            android:noHistory="true"
-            android:configChanges="keyboardHidden|orientation|screenSize" />
+        @GCN_ANDROID_EOS_ACTIVITY@
     </application>
 </manifest>

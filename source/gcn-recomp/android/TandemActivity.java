@@ -2,9 +2,14 @@ package com.ethannicholas.mkdd;
 
 import android.app.NativeActivity;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.net.Uri;
+import android.hardware.input.InputManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.view.InputDevice;
 import android.os.Bundle;
 import android.os.Build;
 import android.os.Environment;
@@ -20,11 +25,86 @@ public class TandemActivity extends NativeActivity {
     private static final int ISO_REQUEST = 18001;
     private static final int EOS_CONFIG_REQUEST = 18002;
 
+    private InputManager inputManager;
+    private final InputManager.InputDeviceListener controllers = new InputManager.InputDeviceListener() {
+        @Override public void onInputDeviceAdded(int id) { publishControllerPresence(); }
+        @Override public void onInputDeviceChanged(int id) { controllerChanged(id); }
+        @Override public void onInputDeviceRemoved(int id) { controllerChanged(id); }
+    };
+
     @Override
     protected void onCreate(Bundle state) {
+        if (getPackageName().endsWith(".turniptest"))
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
         super.onCreate(state);
+        inputManager = (InputManager) getSystemService(INPUT_SERVICE);
+        inputManager.registerInputDeviceListener(controllers, new Handler(Looper.getMainLooper()));
+        publishControllerPresence();
         ensurePublicIsoFolder();
     }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        publishControllerPresence();
+    }
+
+    @Override
+    protected void onDestroy() {
+        inputManager.unregisterInputDeviceListener(controllers);
+        super.onDestroy();
+    }
+
+    private void controllerChanged(int id) {
+        nativeGamepadChanged(id);
+        publishControllerPresence();
+    }
+
+    private void publishControllerPresence() {
+        for (int id : inputManager.getInputDeviceIds()) {
+            InputDevice device = inputManager.getInputDevice(id);
+            if (device == null || device.isVirtual()) continue;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 && !device.isEnabled()) continue;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !device.isExternal()) continue;
+            if (device.supportsSource(InputDevice.SOURCE_GAMEPAD) ||
+                    device.supportsSource(InputDevice.SOURCE_JOYSTICK)) {
+                nativeGamepadPresence(true);
+                return;
+            }
+        }
+        nativeGamepadPresence(false);
+    }
+
+    private String nativeLibraryDirectory() {
+        return getApplicationInfo().nativeLibraryDir;
+    }
+
+    private static float[] gamepadRanges(int id, int source, int[] axes) {
+        InputDevice device = InputDevice.getDevice(id);
+        if (device == null) return null;
+        float[] result = new float[axes.length * 3];
+        for (int i = 0; i < axes.length; ++i) {
+            InputDevice.MotionRange range = device.getMotionRange(axes[i], source);
+            if (range == null) {
+                for (InputDevice.MotionRange candidate : device.getMotionRanges()) {
+                    if (candidate.getAxis() == axes[i] &&
+                            (candidate.getSource() & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) {
+                        range = candidate;
+                        break;
+                    }
+                }
+            }
+            if (range != null) {
+                result[i * 3] = range.getMin();
+                result[i * 3 + 1] = range.getMax();
+                result[i * 3 + 2] = range.getFlat();
+            }
+        }
+        return result;
+    }
+
+    private static native void nativeGamepadChanged(int deviceId);
+    private static native void nativeGamepadPresence(boolean connected);
 
     /** Create the user-visible ISO directory without storage permissions on Android Q+. */
     private void ensurePublicIsoFolder() {

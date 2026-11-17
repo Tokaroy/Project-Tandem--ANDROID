@@ -18,7 +18,8 @@ option(GCN_BENCH_ONLY "Build only the headless benchmark (no SDL2, no renderer)"
 # "which guest function did that?" and gives a crash dump something to print.
 option(GCN_TRACE_CALLS "Maintain a guest call stack (diagnostics)" OFF)
 option(GCN_GUEST_CHECKS "Call the game project's consistency checks at every poll, DMA and frame (diagnostics)" OFF)
-option(GCN_ANDROID_VULKAN "Build the Android frontend with the Vulkan GX backend" ON)
+option(GCN_ANDROID_VULKAN "Build the Android frontend with the Vulkan GX backend" OFF)
+option(GCN_ANDROID_EOS "Enable EOS multiplayer in the Android OpenGL ES frontend" OFF)
 
 # PC VR: the desktop executable's --vr. Windows only for now: the frontend binds OpenXR to
 # the window's WGL context (openxr/xr_desktop.cpp), and no other desktop binding is written.
@@ -530,6 +531,15 @@ function(gcn_add_game)
     target_include_directories(scanout_overlay_test PRIVATE ${RT})
   endif()
 
+  if(ANDROID AND G_ANDROID_PACKAGE)
+    set(TANDEM_ANDROID_APPLICATION_ID "${G_ANDROID_PACKAGE}" CACHE STRING "Android application ID")
+    set(GCN_ANDROID_NETWORK_PERMISSION "<uses-permission android:name=\"android.permission.INTERNET\" />")
+    set(GCN_ANDROID_EOS_ACTIVITY [[<activity
+      android:name="com.epicgames.mobile.eossdk.EOSAuthHandlerActivity"
+      android:exported="true" android:noHistory="true"
+      android:configChanges="keyboardHidden|orientation|screenSize" />]])
+  endif()
+
   # ---- Android headset app and harness ----
   # Built from the same pieces as everything else, with the real audio mix and an AAudio
   # device in place of the stub, and the game's own sources. The OpenXR loader comes from
@@ -573,8 +583,8 @@ function(gcn_add_game)
     configure_file(${AND_DIR}/AndroidManifest.xml.in ${CMAKE_BINARY_DIR}/AndroidManifest.xml @ONLY)
   elseif(ANDROID AND HAVE_GAME_ISO AND G_ANDROID_PACKAGE)
     set(AND_DIR ${GCN_RECOMP_DIR}/android)
-    set(ANDROID_SOURCES ${CORE_SOURCES} ${AND_DIR}/eos_android_init.cpp ${AND_DIR}/eos_native.cpp ${RT}/gx/render_gl.cpp ${RT}/gx/shadergen.cpp
-      ${RT}/gx/gl_load.cpp ${RT}/png.cpp ${GLAD_SOURCE} ${G_SOURCES} ${AND_DIR}/egl_main.cpp)
+    set(ANDROID_SOURCES ${CORE_SOURCES} ${RT}/gx/render_gl.cpp ${RT}/gx/shadergen.cpp
+      ${RT}/gx/gl_load.cpp ${RT}/png.cpp ${GLAD_SOURCE} ${G_SOURCES} ${AND_DIR}/egl_main.cpp ${AND_DIR}/gamepad.cpp)
     set(ANDROID_DEFS ${GCN_GAME_DEFS} ${GCN_GL_DEFS} GCN_LOG_TAG="${G_NAME}")
     add_library(${G_NAME} SHARED ${ANDROID_SOURCES})
     _gcn_set_standards(${G_NAME})
@@ -595,35 +605,39 @@ function(gcn_add_game)
     # TANDEM_K004_AAUDIO
     target_link_libraries(${G_NAME} PRIVATE aaudio)
 
-    # TANDEM_K127_EOS_SERVICE
-    target_sources(${G_NAME} PRIVATE ${AND_DIR}/eos_service_android.cpp)
-    target_sources(${G_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src/rooms_native.cpp)
-    # TANDEM_K119_EOS_BACKEND
-    target_sources(${G_NAME} PRIVATE
-      ${CMAKE_SOURCE_DIR}/src/eos_config.cpp
-      ${CMAKE_SOURCE_DIR}/src/eos_runtime.cpp
-      ${CMAKE_SOURCE_DIR}/src/eos_bridge.cpp
-      ${CMAKE_SOURCE_DIR}/src/eos_local_http.cpp
-      ${CMAKE_SOURCE_DIR}/src/eos_service.cpp
-    )
-
-    # TANDEM_K106_EOS_NATIVE
-    set(TANDEM_EOS_ROOT "${TANDEM_EXTERNAL_ROOT}")
-    target_include_directories(${G_NAME} PRIVATE
-      "${TANDEM_EOS_ROOT}/eos-sdk-android/SDK/Include")
-    add_library(tandem_eos_sdk SHARED IMPORTED)
-    set_target_properties(tandem_eos_sdk PROPERTIES
-      IMPORTED_LOCATION
-      "${TANDEM_EOS_ROOT}/eos-android-arm64/libEOSSDK.so")
-    target_link_libraries(${G_NAME} PRIVATE tandem_eos_sdk)
-
-    # TANDEM_OPENGL_CURL_K001
-    target_include_directories(${G_NAME} PRIVATE "${TANDEM_EXTERNAL_ROOT}/android-deps/curl-arm64/include")
-    target_link_libraries(${G_NAME} PRIVATE "${TANDEM_EXTERNAL_ROOT}/android-deps/curl-arm64/lib/libcurl.a")
+    if(GCN_ANDROID_EOS)
+      list(APPEND ANDROID_DEFS GCN_ANDROID_EOS)
+      target_sources(${G_NAME} PRIVATE
+        ${AND_DIR}/eos_android_init.cpp
+        ${AND_DIR}/eos_native.cpp
+        ${AND_DIR}/eos_service_android.cpp
+        ${CMAKE_SOURCE_DIR}/src/rooms_native.cpp
+        ${CMAKE_SOURCE_DIR}/src/eos_config.cpp
+        ${CMAKE_SOURCE_DIR}/src/eos_runtime.cpp
+        ${CMAKE_SOURCE_DIR}/src/eos_bridge.cpp
+        ${CMAKE_SOURCE_DIR}/src/eos_local_http.cpp
+        ${CMAKE_SOURCE_DIR}/src/eos_service.cpp
+      )
+      target_include_directories(${G_NAME} PRIVATE
+        "${TANDEM_EXTERNAL_ROOT}/eos-sdk-android/SDK/Include"
+        "${TANDEM_EXTERNAL_ROOT}/android-deps/curl-arm64/include")
+      add_library(tandem_eos_sdk SHARED IMPORTED)
+      set_target_properties(tandem_eos_sdk PROPERTIES
+        IMPORTED_LOCATION "${TANDEM_EXTERNAL_ROOT}/eos-android-arm64/libEOSSDK.so")
+      target_link_libraries(${G_NAME} PRIVATE tandem_eos_sdk
+        "${TANDEM_EXTERNAL_ROOT}/android-deps/curl-arm64/lib/libcurl.a")
+    else()
+      list(APPEND ANDROID_DEFS GCN_ANDROID_OFFLINE)
+      set(GCN_ANDROID_NETWORK_PERMISSION "")
+      set(GCN_ANDROID_EOS_ACTIVITY "")
+    endif()
     target_compile_options(${G_NAME} PRIVATE ${GCN_RUNTIME_WARNINGS})
     list(FILTER ANDROID_DEFS EXCLUDE REGEX "^GCN_DEFAULT_ISO=")
     target_compile_definitions(${G_NAME} PRIVATE ${ANDROID_DEFS} GCN_DEFAULT_ISO="")
     target_link_options(${G_NAME} PRIVATE -u ANativeActivity_onCreate)
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+      target_link_options(${G_NAME} PRIVATE "-Wl,-z,max-page-size=16384")
+    endif()
     set(GCN_ANDROID_FEATURE "<uses-feature android:glEsVersion=\"0x00030002\" android:required=\"true\" />")
     configure_file(${AND_DIR}/AndroidManifest.xml.in ${CMAKE_BINARY_DIR}/AndroidManifest.xml @ONLY)
     set(GCN_ANDROID_JAVA_SOURCE ${AND_DIR}/TandemActivity.java PARENT_SCOPE)

@@ -142,3 +142,25 @@ Nenhum arquivo comercial do jogo é fornecido com o projeto.
 ---
 
 **🏁 Project Tandem Android — Levando a recompilação nativa para uma nova plataforma.**
+
+## 🆕 Atualização Android — Novembro de 2026
+
+### 🎮 Controles físicos
+- Suporte a controles USB e Bluetooth compatíveis com Android.
+- Controles touchscreen preservados.
+- Mapeamento de botões e analógicos para jogar Mario Kart: Double Dash!!
+
+### 🚀 Mesa Turnip / Zink
+- Implementação experimental de Mesa Turnip/Zink.
+- **O modo Turnip é destinado exclusivamente a GPUs Qualcomm Adreno.**
+- GPUs Mali e PowerVR não são compatíveis com esse modo.
+- A compatibilidade e o desempenho dependem do dispositivo e do driver.
+
+### 🌐 Modo online
+- O modo online experimental foi removido.
+- O projeto agora prioriza a jogabilidade local, estabilidade e desempenho.
+
+### ⚠️ Observações
+- É necessário fornecer uma ISO compatível do jogo, obtida legalmente.
+- Nenhuma ISO é distribuída neste repositório.
+- Algumas funcionalidades ainda podem exigir testes adicionais.

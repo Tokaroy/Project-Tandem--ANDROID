@@ -567,15 +567,35 @@ TexLookup texture_lookup(const TexParams& p, std::vector<std::shared_ptr<TexData
     td->width = p.width;
     td->height = p.height;
     td->hash = e.hash ^ (pal_hash * 0x9E3779B97F4A7C15ull);
-    td->dolphin_name = mkdd_dolphin_name(phys_ptr(addr), texture_size_bytes(p.fmt,p.width,p.height), p.width,p.height,p.fmt,p.levels,pal,indexed?tlut_entries:0);
-    w = p.width; h = p.height;
-    for (uint32_t l = 0; l < p.levels; l++) {
-        std::vector<uint32_t> px(w * h);
-        decode_level(src, p.fmt, w, h, pal, p.tlut_fmt, px.data());
-        td->levels.push_back(std::move(px));
-        src += texture_size_bytes(p.fmt, w, h);
-        w = w > 1 ? w / 2 : 1;
-        h = h > 1 ? h / 2 : 1;
+    static const bool hd_enabled = [] {
+        const char* setting = getenv("MKDD_DOLPHIN_HD");
+        return setting && strcmp(setting, "1") == 0;
+    }();
+    if (hd_enabled)
+        td->dolphin_name = mkdd_dolphin_name(src, texture_size_bytes(p.fmt,p.width,p.height),
+            p.width,p.height,p.fmt,p.levels,pal,indexed?tlut_entries:0);
+#ifdef __ANDROID__
+    // THP uploads each Y/U/V plane as a new single-level I8 texture. Keep
+    // one byte per texel and de-tile whole rows of the aligned 8x4 blocks.
+    if (p.fmt == TF_I8 && p.levels == 1 && p.width % 8 == 0 && p.height % 4 == 0) {
+        td->intensity.resize(size_t(p.width) * p.height);
+        for (uint32_t y = 0; y < p.height; y += 4)
+            for (uint32_t x = 0; x < p.width; x += 8, src += 32)
+                for (uint32_t row = 0; row < 4; ++row)
+                    memcpy(td->intensity.data() + size_t(y + row) * p.width + x, src + row * 8, 8);
+    } else
+#endif
+    {
+        w = p.width;
+        h = p.height;
+        for (uint32_t l = 0; l < p.levels; l++) {
+            std::vector<uint32_t> px(w * h);
+            decode_level(src, p.fmt, w, h, pal, p.tlut_fmt, px.data());
+            td->levels.push_back(std::move(px));
+            src += texture_size_bytes(p.fmt, w, h);
+            w = w > 1 ? w / 2 : 1;
+            h = h > 1 ? h / 2 : 1;
+        }
     }
     e.variants.push_back({pal_hash, td});
     new_textures.push_back(td);
@@ -585,10 +605,14 @@ TexLookup texture_lookup(const TexParams& p, std::vector<std::shared_ptr<TexData
     static const bool texlog = getenv("GCN_TEXLOG") != nullptr;
     if (texlog) {
         uint32_t nonzero = 0;
-        for (uint32_t v : td->levels[0]) nonzero += (v & 0x00FFFFFF) != 0;
+        if (!td->intensity.empty()) {
+            for (uint8_t v : td->intensity) nonzero += v != 0;
+        } else {
+            for (uint32_t v : td->levels[0]) nonzero += (v & 0x00FFFFFF) != 0;
+        }
         fprintf(stderr, "[tex] f%u id=%u hash=%016llx addr=%08X fmt=%u %ux%u levels=%u nonblack=%u/%zu",
                 g_frame_counter, td->id, (unsigned long long)td->hash, addr, p.fmt, p.width, p.height, p.levels,
-                nonzero, td->levels[0].size());
+                nonzero, size_t(p.width) * p.height);
         if (indexed) {
             // The palette entries the texels use, decoded: which ones a glyph lands on is
             // what decides what colour it comes out.

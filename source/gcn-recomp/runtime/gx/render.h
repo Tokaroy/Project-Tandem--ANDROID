@@ -33,6 +33,7 @@ struct TexData {
     uint32_t id;
     uint32_t width, height;
     std::vector<std::vector<uint32_t>> levels;  // RGBA8, row 0 = top
+    std::vector<uint8_t> intensity;  // Alternative I8 payload for a single level
     // A hash of the texels and of the palette entries they use: the same texture gets the
     // same hash in every run, where `id` is only the order it was decoded in. What a game
     // project names a texture by (a draw filter that hides a model's materials, say).
